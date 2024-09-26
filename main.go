@@ -1,17 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"path"
-	"strings"
-
-	"golang.org/x/net/html"
 )
 
 func main() {
@@ -24,74 +16,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	stat, err := os.Stat(*targetDir)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			panic("could not check if target directory exists: " + err.Error())
-		}
-		if err := os.Mkdir(*targetDir, 0755); err != nil {
-			panic("could not create target directory: " + err.Error())
-		}
-	} else {
-		if !stat.IsDir() {
-			panic("target directory is not a directory")
-		}
-	}
-
-	url := "https://etherscan.io/address/" + contractAddress
-	resp, err := http.Get(url)
+	files, err := getFiles(contractAddress)
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
 
-	tokenizer := html.NewTokenizer(resp.Body)
-	fileName := ""
-	for {
-		tokenType := tokenizer.Next()
-		if tokenType == html.ErrorToken {
-			err := tokenizer.Err()
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			panic(err)
-		}
+	if err := fillPaths(files); err != nil {
+		panic(err)
+	}
 
-		if tokenType == html.TextToken {
-			text := string(tokenizer.Text())
-			if strings.Contains(text, "File ") {
-				fields := strings.Fields(text)
-				fileName = fields[len(fields)-1]
-			}
-			continue
-		}
+	writtenFiles, err := writeAllFiles(files, *targetDir)
+	if err != nil {
+		panic(err)
+	}
 
-		for {
-			k, v, moreAttrs := tokenizer.TagAttr()
-			if string(k) == "class" && bytes.Contains(v, []byte("js-sourcecopyarea")) {
-				if fileName == "" {
-					// not a contract code file
-					break
-				}
-
-				tokenType = tokenizer.Next()
-				if tokenType != html.TextToken {
-					panic("unexpected token type")
-				}
-
-				code := tokenizer.Text()
-				filePath := path.Join(*targetDir, fileName)
-				if err := os.WriteFile(filePath, code, 0640); err != nil {
-					panic("could not save file: " + filePath + ": " + err.Error())
-				}
-
-				fileName = ""
-				break
-			}
-
-			if !moreAttrs {
-				break
-			}
-		}
+	if writtenFiles != len(files) {
+		panic(fmt.Sprintf("%d out of %d were written", writtenFiles, len(files)))
 	}
 }
