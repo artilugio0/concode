@@ -63,15 +63,24 @@ func getFiles(contractAddress string) (map[FileName]*SourceCodeFile, error) {
 					break
 				}
 
-				tokenType = tokenizer.Next()
-				if tokenType != html.TextToken {
-					return nil, fmt.Errorf("unexpected token type")
+				rawContent := ""
+				thisTokenType := tokenizer.Next()
+				for {
+					if thisTokenType == html.TextToken {
+						rawContent += string(tokenizer.Text())
+					}
+
+					thisTokenType = tokenizer.Next()
+					tagName, _ := tokenizer.TagName()
+
+					if string(tagName) == "pre" && thisTokenType == html.EndTagToken {
+						break
+					}
 				}
 
-				code := tokenizer.Text()
 				file := &SourceCodeFile{
 					Name:       fileName,
-					RawContent: string(code),
+					RawContent: rawContent,
 				}
 				fillDependenciesAndImports(file)
 				files[fileName] = file
