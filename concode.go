@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -202,4 +203,32 @@ func fillPathForFile(file *SourceCodeFile, dependents map[FileName][]*SourceCode
 	}
 
 	return nil
+}
+
+func addBasePathToImports(files map[FileName]*SourceCodeFile, basePath string) {
+	for _, file := range files {
+		newRawLines := []string{}
+		for _, line := range strings.Split(file.RawContent, "\n") {
+			// only interested in import lines
+			if !strings.HasPrefix(strings.TrimSpace(line), "import") {
+				newRawLines = append(newRawLines, line)
+				continue
+			}
+
+			importLineFields := strings.Fields(strings.TrimSpace(line))
+			importPath := strings.Trim(importLineFields[len(importLineFields)-1], `'";`)
+
+			// relative imports do not have to be added the basePath
+			if strings.HasPrefix(importPath, ".") {
+				newRawLines = append(newRawLines, line)
+				continue
+			}
+
+			newImportPath := path.Join(basePath, importPath)
+			newLine := strings.Replace(line, importPath, newImportPath, 1)
+
+			newRawLines = append(newRawLines, newLine)
+		}
+		file.RawContent = strings.Join(newRawLines, "\n")
+	}
 }
