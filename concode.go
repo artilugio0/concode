@@ -127,7 +127,7 @@ func fillPaths(files map[FileName]*SourceCodeFile) error {
 	for {
 		done := 0
 		for _, file := range files {
-			if err := fillPathForFile(file, dependents, map[FileName]bool{}); err != nil {
+			if err := fillPathForFile(file, dependents, map[FileName]bool{}, files); err != nil {
 				return err
 			}
 
@@ -146,7 +146,7 @@ func fillPaths(files map[FileName]*SourceCodeFile) error {
 	return nil
 }
 
-func fillPathForFile(file *SourceCodeFile, dependents map[FileName][]*SourceCodeFile, callstack map[FileName]bool) error {
+func fillPathForFile(file *SourceCodeFile, dependents map[FileName][]*SourceCodeFile, callstack map[FileName]bool, files map[string]*SourceCodeFile) error {
 	if callstack[file.Name] {
 		return nil
 	}
@@ -158,13 +158,62 @@ func fillPathForFile(file *SourceCodeFile, dependents map[FileName][]*SourceCode
 		return nil
 	}
 
+	// if no other file imports this file, try determining this file's path
+	// using its imports
 	if len(dependents[file.Name]) == 0 {
+		// check if the path can be determined with the siblings in the import list
+		for _, imp := range file.Imports {
+			impFields := strings.Split(imp, "/")
+			f, ok := files[impFields[len(impFields)-1]]
+			if !ok {
+				panic("unexpected file")
+			}
+			err := fillPathForFile(f, dependents, callstack, files)
+			if err != nil {
+				return err
+			}
+
+			if len(f.PathFields) > 0 {
+				file.PathFields = append([]string{}, f.PathFields...)
+			}
+
+			if impFields[0] == ".." {
+				for i := 0; i < len(impFields) && impFields[i] == ".."; i++ {
+					file.PathFields = append(file.PathFields, "dummy")
+				}
+			}
+
+			if len(file.PathFields) > 0 {
+				return nil
+			}
+		}
+
+		// if the path could not be determined with the siblings,
+		// find out how many dirs deep this file should be located
+		// and add that amount of dummy dirs to the path
 		file.PathFields = append(file.PathFields, rootDirName)
+		parentsCount := countParentDirsFromImports(file, files, map[string]bool{})
+		count := 0
+		if parentsCount != nil {
+			count = *parentsCount
+		}
+		for i := 0; i < count; i++ {
+			file.PathFields = append(file.PathFields, "dummy")
+		}
+
 		return nil
 	}
 
 	for _, dependentFile := range dependents[file.Name] {
-		fillPathForFile(dependentFile, dependents, callstack)
+		err := fillPathForFile(dependentFile, dependents, callstack, files)
+		if err != nil {
+			return err
+		}
+
+		if len(dependentFile.PathFields) == 0 {
+			continue
+		}
+
 		// find out how the dependent is importing this file
 		// get the index in the import array
 		found := false
@@ -187,18 +236,29 @@ func fillPathForFile(file *SourceCodeFile, dependents map[FileName][]*SourceCode
 		importPathFields := strings.Split(importPath, "/")
 		importPathFields = importPathFields[:len(importPathFields)-1]
 
+		newPathFields := []string{}
 		if importPathFields[0] == ".." {
 			parentsCount := 0
 			for i := 0; i < len(importPathFields) && importPathFields[i] == ".."; i++ {
 				parentsCount++
 			}
-			file.PathFields = append([]string{}, dependentFile.PathFields[:len(dependentFile.PathFields)-parentsCount]...)
-			file.PathFields = append(file.PathFields, importPathFields[parentsCount:]...)
+
+			if parentsCount >= len(dependentFile.PathFields) {
+				continue
+			}
+
+			newPathFields = append([]string{}, dependentFile.PathFields[:len(dependentFile.PathFields)-parentsCount]...)
+			newPathFields = append(newPathFields, importPathFields[parentsCount:]...)
 		} else if importPathFields[0] == "." {
-			file.PathFields = append([]string{}, dependentFile.PathFields...)
-			file.PathFields = append(file.PathFields, importPathFields[1:]...)
+			newPathFields = append([]string{}, dependentFile.PathFields...)
+			newPathFields = append(newPathFields, importPathFields[1:]...)
 		} else {
-			file.PathFields = append([]string{rootDirName}, importPathFields...)
+			newPathFields = append([]string{rootDirName}, importPathFields...)
+		}
+
+		// always keep the longer path
+		if len(newPathFields) >= len(file.PathFields) {
+			file.PathFields = newPathFields
 		}
 	}
 
@@ -231,4 +291,42 @@ func addBasePathToImports(files map[FileName]*SourceCodeFile, basePath string) {
 		}
 		file.RawContent = strings.Join(newRawLines, "\n")
 	}
+}
+
+func countParentDirsFromImports(file *SourceCodeFile, files map[string]*SourceCodeFile, callstack map[string]bool) *int {
+	if callstack[file.Name] {
+		return nil
+	}
+
+	callstack[file.Name] = true
+	defer func() { callstack[file.Name] = false }()
+
+	// find out how many parentDirs deep this file should be located
+	parentDirs := 0
+	for _, imp := range file.Imports {
+		parentsCount := 0
+		importFields := strings.Split(imp, "/")
+
+		if importFields[0] == ".." {
+			for _, f := range importFields {
+				if f == ".." {
+					parentsCount++
+				}
+			}
+		} else if importFields[0] == "." && strings.HasSuffix(importFields[1], ".sol") {
+			f, ok := files[importFields[1]]
+			if !ok {
+				panic("unexpected file")
+			}
+
+			c := countParentDirsFromImports(f, files, callstack)
+			if c != nil {
+				parentsCount = *c
+			}
+		}
+
+		parentDirs = max(parentsCount, parentDirs)
+	}
+
+	return &parentDirs
 }
